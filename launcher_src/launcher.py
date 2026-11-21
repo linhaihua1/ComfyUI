@@ -19,11 +19,12 @@ import threading
 import time
 import webbrowser
 
-CREATE_NO_WINDOW = 0x08000000
+CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
-# 本地内置超级账号：只在本机登录门禁上生效，ComfyUI 本体不再直接对外暴露
-ACCOUNT_USER = "admin"
-ACCOUNT_PASS = "admin@123"
+# 本地内置超级账号：可用环境变量覆盖（云服务器部署时务必修改）
+ACCOUNT_USER = os.environ.get("COMFY_ADMIN_USER", "admin")
+ACCOUNT_PASS = os.environ.get("COMFY_ADMIN_PASS", "admin@123")
+IS_WINDOWS = os.name == "nt"
 
 # 官方源在大陆经常卡在 0 速度，优先走阿里云 PyTorch wheel 镜像
 TORCH_MIRROR_TPL = "https://mirrors.aliyun.com/pytorch-wheels/{tag}/"
@@ -53,7 +54,8 @@ except Exception:
 
 def setup_console():
     try:
-        os.system("chcp 65001 >nul 2>&1")
+        if IS_WINDOWS:
+            os.system("chcp 65001 >nul 2>&1")
         if sys.stdout and hasattr(sys.stdout, "reconfigure"):
             sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
             sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
@@ -83,7 +85,9 @@ def find_app_dir(base):
 def find_python(app_dir):
     candidates = [
         os.path.join(app_dir, "venv", "Scripts", "python.exe"),
+        os.path.join(app_dir, "venv", "bin", "python"),
         os.path.join(app_dir, "python_embeded", "python.exe"),
+        shutil.which("python3"),
         shutil.which("python"),
         shutil.which("py"),
     ]
@@ -109,6 +113,12 @@ class _MemoryStatusEx(ctypes.Structure):
 
 def total_ram_gb():
     try:
+        if not IS_WINDOWS:
+            with open("/proc/meminfo", "r", encoding="utf-8") as fp:
+                for line in fp:
+                    if line.startswith("MemTotal:"):
+                        return round(int(line.split()[1]) / (1024 ** 2), 1)
+            return 0.0
         status = _MemoryStatusEx()
         status.dwLength = ctypes.sizeof(_MemoryStatusEx)
         if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
@@ -185,14 +195,14 @@ def gate_script():
     return None
 
 
-def start_gate(python, public_port, backend_port):
+def start_gate(python, host, public_port, backend_port):
     """用 venv 的 python 拉起登录门禁，成功返回 Popen 对象，失败返回 None。"""
     script = gate_script()
     if not script:
         print("[错误] 未找到 login_gate.py，登录门禁无法启动，已中止（避免无密码直接暴露服务）。")
         return None
     proc = subprocess.Popen(
-        [python, script, str(public_port), str(backend_port), ACCOUNT_USER, ACCOUNT_PASS],
+        [python, script, str(public_port), str(backend_port), ACCOUNT_USER, ACCOUNT_PASS, host],
         creationflags=CREATE_NO_WINDOW, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(50):
         if proc.poll() is not None:
@@ -211,6 +221,18 @@ def open_browser(port):
         webbrowser.open("http://127.0.0.1:" + str(port) + "/")
     except Exception:
         pass
+
+
+def parse_option(args, name):
+    """读取 --name value 或 --name=value，返回字符串或 None。"""
+    if name in args:
+        idx = args.index(name)
+        if idx + 1 < len(args):
+            return args[idx + 1]
+    for a in args:
+        if a.startswith(name + "="):
+            return a.split("=", 1)[1]
+    return None
 
 
 def xformers_op_ok(python):
@@ -250,18 +272,24 @@ def pip_install(python, packages, extra=None):
     return False
 
 
+def venv_python(venv_dir):
+    if IS_WINDOWS:
+        return os.path.join(venv_dir, "Scripts", "python.exe")
+    return os.path.join(venv_dir, "bin", "python")
+
+
 def install_env(app_dir):
     venv_dir = os.path.join(app_dir, "venv")
     if not os.path.isdir(venv_dir):
-        sys_py = shutil.which("python") or shutil.which("py")
+        sys_py = shutil.which("python3") or shutil.which("python") or shutil.which("py")
         if not sys_py:
-            print("[错误] 未检测到 Python，请先安装 Python 3.11 并勾选 Add python.exe to PATH。")
+            print("[错误] 未检测到 Python，请先安装 Python 3.11 并加入 PATH。")
             return 1
         print("==> 创建虚拟环境: " + venv_dir)
         if subprocess.call([sys_py, "-m", "venv", venv_dir]) != 0:
             print("[错误] 虚拟环境创建失败。")
             return 1
-    python = os.path.join(venv_dir, "Scripts", "python.exe")
+    python = venv_python(venv_dir)
 
     print("==> 升级 pip / wheel")
     subprocess.call([python, "-m", "pip", "install", "--upgrade", "pip", "wheel"])
@@ -313,7 +341,7 @@ def install_env(app_dir):
     if not info["cuda"]:
         print("[警告] CUDA 不可用，请检查 NVIDIA 驱动是否为最新版。")
     print("")
-    print("安装完成，双击 ComfyUI启动器.exe 即可运行。")
+    print("安装完成。Windows 双击 ComfyUI启动器.exe；Linux 运行 python launcher_src/launcher.py --host 0.0.0.0")
     return 0
 
 
@@ -398,6 +426,11 @@ def main():
         while public_port < 8200 and port_open(public_port):
             public_port += 1
 
+    # 监听地址：默认仅本机；云服务器部署传 --host 0.0.0.0
+    bind_host = parse_option(args, "--host") or "127.0.0.1"
+    is_local_host = bind_host in ("127.0.0.1", "localhost", "::1")
+    no_browser = "--no-browser" in args or not is_local_host
+
     # 内部端口给 ComfyUI 本体用，登录门禁监听 public_port 并转发
     backend_port = first_free_port(public_port + 100, public_port + 199)
     if backend_port is None:
@@ -415,7 +448,10 @@ def main():
         if a == "--port":
             skip_next = True
             continue
-        if a.startswith("--port=") or a == "--auto-launch":
+        if a == "--host":
+            skip_next = True
+            continue
+        if a.startswith("--port=") or a.startswith("--host=") or a in ("--auto-launch", "--no-browser"):
             continue
         clean_args.append(a)
 
@@ -429,7 +465,8 @@ def main():
     print(" 显存策略   : " + ("--vram-headroom" if dynamic else "--reserve-vram") + " "
           + str(new_h if dynamic else old_h) + " (" + ("DynamicVRAM" if dynamic else "legacy 回退") + ")")
     print(" 文本编码器 : " + ("fp8_e4m3fn（低显存优化，COMFY_NO_FP8_TE=1 可关闭）" if fp8_te else "默认 fp16"))
-    print(" 访问地址   : http://127.0.0.1:" + str(public_port))
+    print(" 访问地址   : http://" + ("127.0.0.1" if not is_local_host else bind_host)
+          + ":" + str(public_port) + ("（监听 " + bind_host + "）" if not is_local_host else ""))
     print(" 登录账号   : " + ACCOUNT_USER + " / " + ACCOUNT_PASS + "（本地内置）")
     print(" 程序目录   : " + app_dir)
     print("==================================================")
@@ -441,10 +478,11 @@ def main():
     if 0 < ram < 20:
         print("提示: 物理内存不足 20G，建议把虚拟内存调到 16G 以上以减少爆内存。")
 
-    gate = start_gate(python, public_port, backend_port)
+    gate = start_gate(python, bind_host, public_port, backend_port)
     if gate is None:
         return 1
-    threading.Thread(target=open_browser, args=(public_port,), daemon=True).start()
+    if not no_browser:
+        threading.Thread(target=open_browser, args=(public_port,), daemon=True).start()
 
     try:
         return subprocess.call([python, "main.py"] + launch + clean_args, cwd=app_dir)

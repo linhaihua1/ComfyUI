@@ -5,6 +5,7 @@
 > - 已启用 ComfyUI-Manager，可补装缺失节点；云端合作节点（Seedream 等）默认禁用
 > - 附带 3 个本地工作流：SD1.5 快速出图、SD1.5-Seedream 改写版、SDXL 高画质
 > - 完整使用说明：[使用说明.md](使用说明.md)
+> - Linux / 云服务器部署：[Linux部署手册.md](Linux部署手册.md)（支持 `--host 0.0.0.0`、systemd、Nginx  HTTPS）
 >
 > 以下为上游 ComfyUI 官方说明。
 

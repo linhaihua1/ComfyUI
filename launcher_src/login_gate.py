@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
-"""ComfyUI 本地登录门禁（由启动器拉起，仅监听 127.0.0.1）。
+"""ComfyUI 登录门禁（由启动器拉起，默认仅监听 127.0.0.1）。
 
 架构：
-    浏览器 -> 127.0.0.1:<public_port>（本文件，带登录校验）
+    浏览器 -> <bind_host>:<public_port>（本文件，带登录校验）
            -> 127.0.0.1:<backend_port>（ComfyUI 本体，不对外暴露）
 
 用法：
-    python login_gate.py <public_port> <backend_port> [username] [password]
+    python login_gate.py <public_port> <backend_port> [username] [password] [bind_host]
 
-内置账号固定为 admin / admin@123，登录成功后写入 HttpOnly Cookie，
-之后所有 HTTP / WebSocket 请求放行到 ComfyUI。
+默认账号 admin / admin@123，可用 COMFY_ADMIN_USER / COMFY_ADMIN_PASS 环境变量覆盖。
+云服务器部署时 bind_host 传 0.0.0.0，并建议在前面套 Nginx/Caddy 做 HTTPS。
 """
 import asyncio
+import os
 import secrets
 import sys
 import time
@@ -21,6 +22,11 @@ from aiohttp import ClientConnectorError, ClientSession, ClientTimeout, WSMsgTyp
 
 COOKIE_NAME = "comfy_admin"
 SESSION_TTL = 7 * 24 * 3600
+
+# 登录失败防爆破：同一 IP 在窗口期内失败过多则临时锁定
+FAIL_WINDOW = 10 * 60
+FAIL_LIMIT = 5
+LOCK_SECONDS = 5 * 60
 
 HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
@@ -67,7 +73,7 @@ LOGIN_PAGE = """<!DOCTYPE html>
   <input type="hidden" name="next" value="{next}">
   <button type="submit">登录</button>
   {error}
-  <div class="foot">仅限本机访问 · 127.0.0.1<br>内置账号 admin</div>
+  <div class="foot">请妥善保管管理员密码<br>内置账号 admin</div>
 </form></body></html>
 """
 
@@ -90,12 +96,14 @@ def login_html(error="", next_url="/"):
 
 
 class Gate:
-    def __init__(self, public_port, backend_port, username, password):
+    def __init__(self, host, public_port, backend_port, username, password):
+        self.host = host
         self.public_port = public_port
         self.backend_port = backend_port
         self.username = username
         self.password = password
         self.tokens = {}
+        self.fails = {}
         self.session = None
 
     # ---------- 鉴权 ----------
@@ -123,7 +131,7 @@ class Gate:
         if request.method == "GET" and "text/html" in accept:
             raise web.HTTPFound("/login?next=" + urllib.parse.quote(request.path_qs, safe=""))
         return web.json_response(
-            {"error": "unauthorized", "hint": "请先登录 http://127.0.0.1:%d/login" % self.public_port},
+            {"error": "unauthorized", "hint": "请先登录 http://%s/login" % request.host},
             status=401)
 
     # ---------- 登录 / 登出 ----------
@@ -145,13 +153,35 @@ class Gate:
             next_url = "/"
         username = str(form.get("username", "")).strip()
         password = str(form.get("password", ""))
+
+        ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+              or request.remote or "unknown")
+        now = time.time()
+        fail = self.fails.get(ip)
+        if fail and fail.get("locked_until", 0) > now:
+            wait = int(fail["locked_until"] - now)
+            return web.Response(text=login_html("尝试次数过多，请 %d 秒后再试" % wait, next_url),
+                                content_type="text/html", charset="utf-8", status=429)
+
         if username == self.username and password == self.password:
+            self.fails.pop(ip, None)
             token = secrets.token_urlsafe(32)
-            self.tokens[token] = time.time() + SESSION_TTL
+            self.tokens[token] = now + SESSION_TTL
             response = web.HTTPFound(next_url)
+            https = (request.headers.get("X-Forwarded-Proto", "").lower() == "https"
+                     or request.scheme == "https")
             response.set_cookie(COOKIE_NAME, token, max_age=SESSION_TTL,
-                                httponly=True, samesite="Lax", path="/")
+                                httponly=True, samesite="Lax", path="/", secure=https)
             raise response
+
+        if not fail or now - fail["first"] > FAIL_WINDOW:
+            fail = {"first": now, "count": 0, "locked_until": 0}
+        fail["count"] += 1
+        if fail["count"] >= FAIL_LIMIT:
+            fail["locked_until"] = now + LOCK_SECONDS
+            fail["count"] = 0
+            fail["first"] = now
+        self.fails[ip] = fail
         await asyncio.sleep(0.5)  # 降低暴力尝试速度
         return web.Response(text=login_html("账号或密码错误", next_url),
                             content_type="text/html", charset="utf-8", status=401)
@@ -231,21 +261,22 @@ class Gate:
         app.router.add_route("*", "/{tail:.*}", self.proxy)
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
-        await web.TCPSite(runner, "127.0.0.1", self.public_port).start()
-        print("[gate] 登录门禁已启动: http://127.0.0.1:%d -> 127.0.0.1:%d"
-              % (self.public_port, self.backend_port), flush=True)
+        await web.TCPSite(runner, self.host, self.public_port).start()
+        print("[gate] 登录门禁已启动: http://%s:%d -> 127.0.0.1:%d"
+              % (self.host, self.public_port, self.backend_port), flush=True)
         await asyncio.Event().wait()
 
 
 def main():
     if len(sys.argv) < 3:
-        print("usage: login_gate.py <public_port> <backend_port> [username] [password]")
+        print("usage: login_gate.py <public_port> <backend_port> [username] [password] [bind_host]")
         return 2
     public_port = int(sys.argv[1])
     backend_port = int(sys.argv[2])
-    username = sys.argv[3] if len(sys.argv) > 3 else "admin"
-    password = sys.argv[4] if len(sys.argv) > 4 else "admin@123"
-    gate = Gate(public_port, backend_port, username, password)
+    username = sys.argv[3] if len(sys.argv) > 3 else os.environ.get("COMFY_ADMIN_USER", "admin")
+    password = sys.argv[4] if len(sys.argv) > 4 else os.environ.get("COMFY_ADMIN_PASS", "admin@123")
+    host = sys.argv[5] if len(sys.argv) > 5 else "127.0.0.1"
+    gate = Gate(host, public_port, backend_port, username, password)
     try:
         asyncio.run(gate.run())
     except KeyboardInterrupt:
