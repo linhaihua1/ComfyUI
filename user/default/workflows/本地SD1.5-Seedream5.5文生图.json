@@ -1,0 +1,140 @@
+{
+  "id": "3c1d8f42-7b2e-4a91-9d55-6e0b2f8a5c11",
+  "revision": 0,
+  "last_node_id": 8,
+  "last_link_id": 9,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "CheckpointLoaderSimple",
+      "pos": [100, 130],
+      "size": [315, 98],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        { "name": "MODEL", "type": "MODEL", "links": [1], "slot_index": 0 },
+        { "name": "CLIP", "type": "CLIP", "links": [2, 3], "slot_index": 1 },
+        { "name": "VAE", "type": "VAE", "links": [8], "slot_index": 2 }
+      ],
+      "properties": { "Node name for S&R": "CheckpointLoaderSimple" },
+      "widgets_values": ["v1-5-pruned-emaonly-fp16.safetensors"]
+    },
+    {
+      "id": 2,
+      "type": "CLIPTextEncode",
+      "pos": [460, 40],
+      "size": [420, 260],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [{ "name": "clip", "type": "CLIP", "link": 2 }],
+      "outputs": [{ "name": "CONDITIONING", "type": "CONDITIONING", "links": [4], "slot_index": 0 }],
+      "properties": { "Node name for S&R": "CLIPTextEncode" },
+      "widgets_values": ["1:1 worm's-eye low angle looking up at blue sky and glass towers. Young woman leaning in smiling with eyes closed, hugging colorful fuzzy plush creatures; a few float in the sparkling sky. Youthful kawaii energy, light streaks and soft sparkles. Magazine-poster typography MUST be very cute and very obvious: oversized bubbly rounded white title exactly \"SEEDREAM\" with soft pastel outline and tiny star stickers; a big candy-pink pill badge with exactly \"5.5\"; small rounded \"SPRING\" capsule; airy hand-drawn doodle arcs, hearts, and scribbles framing the text. Text woven into the sky, playful graffiti-poster character, highly readable, not tiny. Sparse subjects, no crowd. No real mall logos."]
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [460, 340],
+      "size": [420, 160],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [{ "name": "clip", "type": "CLIP", "link": 3 }],
+      "outputs": [{ "name": "CONDITIONING", "type": "CONDITIONING", "links": [5], "slot_index": 0 }],
+      "properties": { "Node name for S&R": "CLIPTextEncode" },
+      "widgets_values": ["blurry, low quality, watermark, text, logo, extra fingers, deformed, crowd"]
+    },
+    {
+      "id": 4,
+      "type": "EmptyLatentImage",
+      "pos": [460, 540],
+      "size": [315, 106],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{ "name": "LATENT", "type": "LATENT", "links": [6], "slot_index": 0 }],
+      "properties": { "Node name for S&R": "EmptyLatentImage" },
+      "widgets_values": [512, 512, 1]
+    },
+    {
+      "id": 5,
+      "type": "KSampler",
+      "pos": [930, 130],
+      "size": [315, 262],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        { "name": "model", "type": "MODEL", "link": 1 },
+        { "name": "positive", "type": "CONDITIONING", "link": 4 },
+        { "name": "negative", "type": "CONDITIONING", "link": 5 },
+        { "name": "latent_image", "type": "LATENT", "link": 6 }
+      ],
+      "outputs": [{ "name": "LATENT", "type": "LATENT", "links": [7], "slot_index": 0 }],
+      "properties": { "Node name for S&R": "KSampler" },
+      "widgets_values": [868829234, "randomize", 25, 7.5, "dpmpp_2m", "karras", 1.0]
+    },
+    {
+      "id": 6,
+      "type": "VAEDecode",
+      "pos": [1290, 130],
+      "size": [210, 46],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        { "name": "samples", "type": "LATENT", "link": 7 },
+        { "name": "vae", "type": "VAE", "link": 8 }
+      ],
+      "outputs": [{ "name": "IMAGE", "type": "IMAGE", "links": [9], "slot_index": 0 }],
+      "properties": { "Node name for S&R": "VAEDecode" },
+      "widgets_values": []
+    },
+    {
+      "id": 7,
+      "type": "SaveImage",
+      "pos": [1540, 130],
+      "size": [315, 270],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [{ "name": "images", "type": "IMAGE", "link": 9 }],
+      "outputs": [],
+      "properties": { "Node name for S&R": "SaveImage" },
+      "widgets_values": ["local_seedream55"]
+    },
+    {
+      "id": 8,
+      "type": "MarkdownNote",
+      "pos": [-560, 130],
+      "size": [600, 420],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "说明",
+      "properties": { "text": "" },
+      "widgets_values": ["## 本地 SD1.5 版（由 Seedream 5.5 文生图模板改写）\n\n- 原 `ByteDanceSeedreamNodeV3` 已替换为本地 `CheckpointLoaderSimple → CLIPTextEncode → EmptyLatentImage → KSampler → VAEDecode → SaveImage`。\n- 提示词沿用原模板；尺寸从 1024×1024 改为 512×512（SD1.5 原生分辨率，1024 会重复构图）。\n- 原提示词里的海报文字排版（\"SEEDREAM\" / \"5.5\" / \"SPRING\"）SD1.5 基本无法正确渲染，只保留画面风格；需要文字请后期加字或换 SDXL/Flux。\n- 想提高分辨率：把 EmptyLatentImage 改成 512×512 后加 `Latent Upscale` + 第二次 KSampler（denoise 0.5~0.6）；6GB 显存建议先 512 出图。\n- seed 保留模板原值 868829234，control_after_generate 为 randomize。\n"]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 5, 0, "MODEL"],
+    [2, 1, 1, 2, 0, "CLIP"],
+    [3, 1, 1, 3, 0, "CLIP"],
+    [4, 2, 0, 5, 1, "CONDITIONING"],
+    [5, 3, 0, 5, 2, "CONDITIONING"],
+    [6, 4, 0, 5, 3, "LATENT"],
+    [7, 5, 0, 6, 0, "LATENT"],
+    [8, 1, 2, 6, 1, "VAE"],
+    [9, 6, 0, 7, 0, "IMAGE"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": { "frontendVersion": "1.59.6" },
+  "version": 0.4
+}
