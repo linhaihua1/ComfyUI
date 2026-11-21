@@ -1,3 +1,15 @@
+> **本仓库为本地定制版 ComfyUI**
+>
+> - 双击 `ComfyUI启动器.exe`（或运行 `启动ComfyUI.bat`）即可启动，访问 http://127.0.0.1:8188
+> - 内置登录账号：`admin` / `admin@123`（本地运行，可通过启动器源码修改）
+> - 已启用 ComfyUI-Manager，可补装缺失节点；云端合作节点（Seedream 等）默认禁用
+> - 附带 3 个本地工作流：SD1.5 快速出图、SD1.5-Seedream 改写版、SDXL 高画质
+> - 完整使用说明：[使用说明.md](使用说明.md)
+>
+> 以下为上游 ComfyUI 官方说明。
+
+---
+
 <div align="center">
 
 # ComfyUI
