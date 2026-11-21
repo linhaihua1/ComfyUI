@@ -70,8 +70,10 @@ def base_dir():
 
 
 def find_app_dir(base):
-    if os.path.exists(os.path.join(base, "main.py")):
-        return base
+    # Linux 以脚本方式运行（launcher_src/launcher.py）时，ComfyUI 根目录是上一级
+    for candidate in (base, os.path.dirname(base), os.getcwd()):
+        if candidate and os.path.exists(os.path.join(candidate, "main.py")):
+            return candidate
     try:
         for name in sorted(os.listdir(base)):
             path = os.path.join(base, name)
